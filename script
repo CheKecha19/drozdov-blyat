@@ -1,0 +1,196 @@
+ Severity = Informational
+        Host Name = ConsoleHost
+        Host Version = 5.1.17763.4720
+        Host ID = 2f8ce9ac-2f84-4b0d-9735-dc5c9fe00fbe
+        Host Application = C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NoLogo -ExecutionPolicy Bypass C:\Scripts\KRBTGT\ChgKrbtgtKey_Auto_V2.ps1
+        Engine Version = 5.1.17763.4720
+        Runspace ID = 0bb4359d-5f48-41b2-ab04-161e57f0b1c0
+        Pipeline ID = 1
+        Command Name = ForEach-Object
+        Command Type = Cmdlet
+        Script Name = C:\Scripts\KRBTGT\ChgKrbtgtKey_Auto_V2.ps1
+        Command Path = 
+        Sequence Number = 13663
+        User = MBRD\msa_KRBTGT$
+        Connected User = 
+        Shell ID = Microsoft.PowerShell
+",
+                    "Name": "ContextInfo"
+                },
+                {
+                    "Name": "UserData"
+                },
+                {
+                    "text": "CommandInvocation(ForEach-Object): "ForEach-Object"
+ParameterBinding(ForEach-Object): name="Process"; value="
+            # Get The FQDN Of The RWDC
+            $rwdcFQDN = $null
+            $rwdcFQDN = $_
+
+            # Retrieve The Object Of The RWDC From AD
+            $rwdcObj = $null
+            Try {
+                #$rwdcObj = Get-ADDomainController $rwdcFQDN -Server $targetedADdomainNearestRWDCFQDN
+                $targetSearchBase = "OU=Domain Controllers," + $((Get-RootDSE -LdapConnection $(Get-LdapConnection -LdapServer:$targetedADdomainNearestRWDCFQDN -EncryptionType Kerberos)).defaultNamingContext.distinguishedName)
+                $rwdcObj = Find-LdapObject -LdapConnection $(Get-LdapConnection -LdapServer:$targetedADdomainNearestRWDCFQDN -EncryptionType Kerberos) -searchBase $targetSearchBase -searchFilter "(&(objectClass=computer)(dNSHostName=$rwdcFQDN))" -PropertiesToLoad @("OperatingSystem", "serverReferenceBL")
+            }
+            Catch {
+                Logging "Error Querying AD Against '$targetedADdomainNearestRWDCFQDN' For Domain Controller With 'dNSHostName=$rwdcFQDN'..." "ERROR"
+                Logging "Exception Type......: $($_.Exception.GetType().FullName)" "ERROR"
+                Logging "Exception Message...: $($_.Exception.Message)" "ERROR"
+                Logging "Error On Script Line: $($_.InvocationInfo.ScriptLineNumber)" "ERROR"
+            }
+        
+            # Define The Columns For The RWDCs In The AD Domain To Be Filled In
+            $tableOfDCsInADDomainObj = New-Object -TypeName System.Object
+            $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Host Name" -Value $rwdcFQDN
+            $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "PDC" -Value $(If (($tableOfADDomainsInADForest | Where-Object { $_.Name -eq $targetedADdomainFQDN }).PDCFsmoOwner -eq $rwdcFQDN) { $true } Else { $false })
+            $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Site Name" -Value $($rwdcObj.serverReferenceBL.Split(",")[2].Replace("CN=", ""))
+            $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "DS Type" -Value "Read/Write"
+            $rwdcKrbTgtSamAccountName = $null
+            If ($modeOfOperationNr -eq 1 -Or $modeOfOperationNr -eq 2 -Or $modeOfOperationNr -eq 6) {
+                # Use The PROD/REAL KrbTgt Account Of The RWDC
+                $rwdcKrbTgtSamAccountName = "krbtgt"
+            }
+            If ($modeOfOperationNr -eq 4 -Or $modeOfOperationNr -eq 8 -Or $modeOfOperationNr -eq 9) {
+                # Use The TEST/BOGUS KrbTgt Account Of The RWDC
+                $rwdcKrbTgtSamAccountName = "krbtgt_TEST"
+            }
+            $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Krb Tgt" -Value $rwdcKrbTgtSamAccountName
+            $rwdcKrbTgtObject = $null
+            Try {
+                $targetSearchBase = (Get-RootDSE -LdapConnection $(Get-LdapConnection -LdapServer:$targetedADdomainNearestRWDCFQDN -EncryptionType Kerberos)).defaultNamingContext.distinguishedName
+                $rwdcKrbTgtObject = Find-LdapObject -LdapConnection $(Get-LdapConnection -LdapServer:$targetedADdomainNearestRWDCFQDN -EncryptionType Kerberos) -searchBase $targetSearchBase -searchFilter "(&(objectCategory=person)(objectClass=user)(sAMAccountName=$rwdcKrbTgtSamAccountName))" -PropertiesToLoad @("pwdlastset")
+            }
+            Catch {
+                Logging "Error Querying AD Against '$targetedADdomainNearestRWDCFQDN' For User Object With 'sAMAccountName=$rwdcKrbTgtSamAccountName'..." "ERROR"
+                Logging "Exception Type......: $($_.Exception.GetType().FullName)" "ERROR"
+                Logging "Exception Message...: $($_.Exception.Message)" "ERROR"
+                Logging "Error On Script Line: $($_.InvocationInfo.ScriptLineNumber)" "ERROR"
+            }
+        
+            # Retrieve The Object Of The KrbTgt Account
+            If ($rwdcKrbTgtObject) {
+                # If The Object Of The KrbTgt Account Exists
+                # Retrieve The DN OF The Object
+                $rwdcKrbTgtObjectDN = $null
+                $rwdcKrbTgtObjectDN = $rwdcKrbTgtObject.DistinguishedName
+
+                # Retrieve The Password Last Set Value Of The KrbTgt Account
+                $rwdcKrbTgtPwdLastSet = $null
+                $rwdcKrbTgtPwdLastSet = Get-Date $([datetime]::fromfiletime($rwdcKrbTgtObject.pwdLastSet)) -f "yyyy-MM-dd HH:mm:ss"
+
+                # Set The Corresponding Value Of The RWDC In The Correct Column Of The Table
+                $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Pwd Last Set" -Value $rwdcKrbTgtPwdLastSet
+
+                # Retrieve The Metadata Of The Object, And More Specific Of The pwdLastSet Attribute Of That Object
+                $objectMetadata = $null
+                $objectMetadata = retrieveObjectMetadata $targetedADdomainNearestRWDCFQDN $rwdcKrbTgtObjectDN $localADforest $adminCrds
+                $objectMetadataAttribPwdLastSet = $null
+                $objectMetadataAttribPwdLastSet = $objectMetadata | Where-Object { $_.Name -eq "pwdLastSet" }
+                $objectMetadataAttribPwdLastSetOrgRWDCFQDN = $null
+                $objectMetadataAttribPwdLastSetOrgRWDCFQDN = If ($objectMetadataAttribPwdLastSet.OriginatingServer) { $objectMetadataAttribPwdLastSet.OriginatingServer } Else { "RWDC Demoted" }
+                $objectMetadataAttribPwdLastSetOrgTime = $null
+                $objectMetadataAttribPwdLastSetOrgTime = Get-Date $($objectMetadataAttribPwdLastSet.LastOriginatingChangeTime) -f "yyyy-MM-dd HH:mm:ss"
+                $objectMetadataAttribPwdLastSetVersion = $null
+                $objectMetadataAttribPwdLastSetVersion = $objectMetadataAttribPwdLastSet.Version
+
+                # Set The Corresponding Value Of The RWDC In The Correct Column Of The Table
+                $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Org RWDC" -Value $objectMetadataAttribPwdLastSetOrgRWDCFQDN
+                $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Org Time" -Value $objectMetadataAttribPwdLastSetOrgTime
+                $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Ver" -Value $objectMetadataAttribPwdLastSetVersion
+            }
+            Else {
+                # If The Object Of The KrbTgt Account Does Not Exist
+                $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Pwd Last Set" -Value "No Such Object"
+                $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Org RWDC" -Value "No Such Object"
+                $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Org Time" -Value "No Such Object"
+                $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Ver" -Value "No Such Object"
+            }
+            $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "IP Address" -Value $(Try { (([System.Net.Dns]::GetHostEntry($rwdcfqdn)).AddressList | Where-Object { $_.AddressFamily -eq "InterNetwork" }).IPAddressToString } Catch { "Unknown" })
+            $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "OS Version" -Value $($rwdcObj.OperatingSystem)
+            # Define The Ports To Check Against
+            $ports = 389 # LDAP
+
+            # Define The Connection Check To Be True Initially
+            $connectionCheckOK = $true
+
+            # For Every Defined Port Check The Connection And Report
+            $ports | ForEach-Object {
+                # Set The Port To Check Against
+                $port = $null
+                $port = $_
+
+                # Test The Connection To The Server Using The Port
+                $connectionResult = $null
+                $connectionResult = portConnectionCheck $rwdcFQDN $port $connectionTimeout
+                If ($connectionResult -eq "ERROR") {
+                    $connectionCheckOK = $false
+                }
+            }
+            If ($connectionCheckOK -eq $true) {
+                # If The Connection Check Is OK
+                # Connect To The RootDSE Of The RWDC
+                $rwdcRootDSEObj = $null
+                Try {
+                    $rwdcRootDSEObj = [ADSI]"LDAP://$rwdcFQDN/rootDSE"
+                }
+                Catch {
+                    Logging "Error Connecting To '$rwdcFQDN' For 'rootDSE'..." "ERROR"
+                    Logging "Exception Type......: $($_.Exception.GetType().FullName)" "ERROR"
+                    Logging "Exception Message...: $($_.Exception.Message)" "ERROR"
+                    Logging "Error On Script Line: $($_.InvocationInfo.ScriptLineNumber)" "ERROR"
+                }
+            
+                If ($rwdcRootDSEObj.Path -eq $null) {
+                    # If It Throws An Error Then The RWDC Is Not Available/Reachable And Increase The Counter Of Unreachable RWDCs
+                    $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Reachable" -Value $false
+                    $nrOfUnReachableRWDCs += 1
+
+                }
+                Else {
+                    # If It Does Not Throw An Error Then The RWDC Is Available/Reachable And Increase The Counter Of Reachable RWDCs
+                    $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Reachable" -Value $true
+                    $nrOfReachableRWDCs += 1
+                }
+            }
+            Else {
+                # If The Connection Check Is Not OK Then The RWDC Is Not Available/Reachable And Increase The Counter Of Unreachable RWDCs
+                $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Reachable" -Value $false
+                $nrOfUnReachableRWDCs += 1
+            }
+            #If ($rwdcObj.OperationMasterRoles -contains "PDCEmulator") {
+            If (($tableOfADDomainsInADForest | Where-Object { $_.Name -eq $targetedADdomainFQDN }).PDCFsmoOwner -eq $rwdcFQDN) {
+                # If The RWDC Is The RWDC With The PDC FSMO, Then Do Not Specify A Source RWDC As The RWDC With The PDC FSMO Is The Source Originating RWDC
+                $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Source RWDC FQDN" -Value "N.A."
+                $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Source RWDC DSA" -Value "N.A."
+            }
+            Else {
+                # If The RWDC Is Not The RWDC With The PDC FSMO, Then Specify A Source RWDC Being The RWDC With The PDC FSMO As The Source Originating RWDC
+                $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Source RWDC FQDN" -Value $targetedADdomainRWDCFQDNWithPDCFSMOFQDN
+                $tableOfDCsInADDomainObj | Add-Member -MemberType NoteProperty -Name "Source RWDC DSA" -Value $targetedADdomainRWDCFQDNWithPDCFSMONTDSSettingsObjectDN
+            }
+
+            # Increase The Counter For The Number Of RWDCs
+            $nrOfRWDCs += 1
+
+            # Add The Row For The RWDC To The Table
+            $tableOfDCsInADDomain += $tableOfDCsInADDomainObj
+        , ..."
+ParameterBinding(ForEach-Object): name="InputObject"; value="DC5.mbrd.ru"
+ParameterBinding(ForEach-Object): name="InputObject"; value="DC4.mbrd.ru"
+ParameterBinding(ForEach-Object): name="InputObject"; value="DC6.mbrd.ru"
+ParameterBinding(ForEach-Object): name="InputObject"; value="DC8.mbrd.ru"
+ParameterBinding(ForEach-Object): name="InputObject"; value="DC7.mbrd.ru"
+ParameterBinding(ForEach-Object): name="InputObject"; value="DC3.mbrd.ru"
+ParameterBinding(ForEach-Object): name="InputObject"; value="dc1.mbrd.ru"
+ParameterBinding(ForEach-Object): name="InputObject"; value="dc2.mbrd.ru"
+ParameterBinding(ForEach-Object): name="InputObject"; value="ad-dc-d01p.mbrd.ru"
+ParameterBinding(ForEach-Object): name="InputObject"; value="ad-dc-v01p.mbrd.ru"
+",
+                    "Name": "Payload"
+                } 
+            ]
+        }
+    }
+}
